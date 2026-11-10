@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 45
     env:
       QT_QPA_PLATFORM: offscreen
-      PYTEST_DEBUG_TEMPROOT: ${{ runner.temp }}\pytest-debug
 
     steps:
       - name: Check out repository
@@ -31,6 +30,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+
+      - name: Configure isolated test temporary root
+        shell: pwsh
+        run: |
+          $tempRoot = Join-Path $env:RUNNER_TEMP 'pytest-debug'
+          New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+          "PYTEST_DEBUG_TEMPROOT=$tempRoot" >> $env:GITHUB_ENV
 
       - name: Compile Python sources
         shell: pwsh
