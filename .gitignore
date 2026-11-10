@@ -1,0 +1,84 @@
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+ENV/
+
+# Local secrets and credential material
+.env
+.env.*
+!.env.example
+.secrets/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Test and analysis output
+.pytest_cache/
+.pytest-basetemp/
+$testBase/
+pytest-final-*/
+$resultFile
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+
+# Local databases, SQLite sidecars, and data directories
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local backups and generated business exports
+backups/
+reports/backups/
+reports/generated/
+reports/exports/
+*.pdf
+*.xls
+*.xlsx
+
+# User-uploaded and locally stored documents
+documents/
+uploads/
+user_uploads/
+storage/
+
+# Logs, temporary files, and editor/OS artifacts
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*.log
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Existing production-specific historical audit reports (preserved in local backup)
+/reports/actor_context_rbac_stage_1.md
+/reports/database_integrity_audit.md
+/reports/pre_release_validation.md
+/reports/security_hardening_report.md
+/reports/supplier_get_by_id_rbac_complete.md
+/reports/supplier_purchase_rbac_inventory.md
