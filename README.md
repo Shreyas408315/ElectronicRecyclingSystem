@@ -131,7 +131,7 @@ Accessible from the **Employees** navigation item:
 - **Employment history**: Status and organizational changes are retained as history records. Operational modules' existing responsible-user text is not automatically reassigned to employee records.
 - **Managed documents**: Employee documents and profile photos use the existing managed-document storage, checksum, validation, and archive services.
 - **Reports**: Export employee directory, status, department/designation, joining, and separation reports to PDF or Excel. Contact and emergency-contact fields are excluded unless the user explicitly confirms a confidential export.
-- **Privacy limitation**: Authentication and role-based access control are not implemented. Employee personal information is therefore not protected by per-user permissions; restrict access to the application and its files.
+- **Privacy controls**: Ordinary employee reads filter private contact and emergency details unless the signed-in user has `employees.private.view`. Confidential PDF/Excel exports require both `employees.private.view` and `employees.export_private`. Employee documents also require permission to access the linked employee record.
 - **Database safety**: Employee tables are additive and reference departments/designations with restrictive foreign keys. Automated employee tests use isolated SQLite databases.
 
 ## Reporting Centre
@@ -152,29 +152,64 @@ available in **Accounting**.
 - Restore requires an explicit confirmation and creates a verified safety backup
   before replacing the selected database. Restart the app after a restore.
 
-## Security and Operational Limitations
+## Authentication, authorization, and privacy
 
-- This local desktop application has no authentication or role-based access
-  control. Restrict access to the workstation, database, documents, and backups.
-- Documents and backups are stored locally without encryption. Protect them with
-  Windows account permissions and encrypted storage where required.
-- GST calculations are configurable application calculations; they are not a
-  statement of legal or tax compliance.
-- The production chart of accounts, account mappings, and opening balances must
-  be configured and approved by an administrator. Historical transactions are
-  intentionally not posted automatically.
+- **Sign-in and credentials**: First launch requires creating the first
+  administrator through the setup dialog. There are no default credentials or
+  password-recovery backdoors. Passwords are stored as Argon2id hashes using
+  `argon2-cffi`, with a minimum 12-character password policy.
+- **Trusted sessions**: Successful local sign-in issues an immutable
+  `ActorContext`. Authorization validates its in-memory trusted-session entry,
+  active account, expiry, and database identity against the same business
+  database session used by the protected operation. Public database-facing
+  service APIs require the actor explicitly; missing or invalid context fails
+  closed. Authentication is local to the application and does not use an
+  external identity provider or network authentication.
+- **Permission model**: The application seeds a permission catalogue and
+  explicit least-privilege assignments for its built-in roles. Services enforce
+  permissions independently of UI visibility; hiding or disabling an action is
+  not the authorization boundary.
+- **Built-in roles**:
 
-## Authentication and access control
-
-- On first launch after the security migration, the application requires an
-  authorized operator to create the first administrator. There is no default
-  password, hidden account, or password recovery backdoor.
-- Passwords are stored only as Argon2id hashes. Passwords require at least 12
-  characters with upper/lower-case letters, a number, and a symbol.
-- Built-in roles are System Administrator, Factory Manager, Procurement,
-  Inventory Operator, Sales Operator, Accounts & Finance, HR/Employee Manager,
-  and Read-only Auditor. Permissions are seeded idempotently; the security
-  service's permission checks deny missing identities/permissions by default.
+  | Role | Intended responsibilities |
+  | --- | --- |
+  | **System Administrator** | Explicit full access to the permission catalogue, including user administration, backups, and private employee data. |
+  | **Factory Manager** | Broad day-to-day operations across procurement, dismantling, inventory, sales, expenses, settings, and standard employee records. It does not receive user administration, backup, or private employee-data permissions. |
+  | **Procurement** | Supplier and purchase operations, plus related document access. |
+  | **Inventory Operator** | Inventory viewing and adjustment/transfer, and dismantling viewing; no inventory-catalogue management or dismantling approval. |
+  | **Sales Operator** | Customer and sales-order operations, dispatch and invoice issue, receipt viewing, and related document access; no receipt posting or voiding. |
+  | **Accounts & Finance** | Accounting configuration, periods, journals and exceptions; receipt, supplier-payment and expense workflows; and selected customer, purchase and sales access, including invoice viewing and voiding. |
+  | **HR/Employee Manager** | Employee administration, private employee-data viewing and confidential exports, and employee document access. |
+  | **Read-only Auditor** | Read-only access to selected supplier, customer, receipt, purchase, dismantling, inventory, sales, invoice, expense, supplier-payment and accounting information. |
+- **Employee privacy**: Standard employee reads redact sensitive contact,
+  emergency-contact and notes fields unless the actor has
+  `employees.private.view`. Private PDF/Excel exports require both
+  `employees.private.view` and `employees.export_private`. The HR/Employee
+  Manager and System Administrator receive these grants; Factory Manager does
+  not.
+- **Documents and backups**: `documents.view` / `documents.manage` do not
+  bypass authorization on the linked business record. Employee documents have
+  additional employee permission checks. Backup listing and verification,
+  creation, and restore require `backups.view`, `backups.create`, and
+  `backups.restore`, respectively; restore also requires explicit confirmation
+  and creates a safety copy before replacing the selected database.
+- **Logout and expiry**: Logout invalidates the trusted in-memory session and
+  clears protected page data. Sessions lock after the configured inactivity
+  timeout (15 minutes by default). Re-authentication creates fresh page
+  instances for the newly authenticated actor rather than reusing the previous
+  account's cached data. The Security page provides audited user and role
+  administration to authorized users.
+- **Operational limitations**: Authentication and RBAC protect application
+  service operations, but the application is a local desktop system; they do
+  not provide remote identity management or replace operating-system file
+  permissions. Local databases, documents and backups are not encrypted by the
+  application. Use appropriate Windows account permissions and encrypted
+  storage where required. No compliance certification is claimed.
+- **Financial and tax setup**: The production chart of accounts, mappings and
+  opening balances must be configured and approved by an administrator.
+  Historical transactions are intentionally not posted automatically.
+  Configurable GST calculations are application calculations, not a statement
+  of legal or tax compliance.
 - Inventory catalogue creation, editing, and deactivation require the separate
   `inventory.manage` permission (System Administrator and Factory Manager).
   Inventory Operators retain inventory viewing and stock adjustment/transfer
@@ -210,8 +245,9 @@ available in **Accounting**.
   transactions and do not grant manual `accounting.post` access.
 - Supplier payments use `supplier_payments.view`, `.manage`, `.post`, and
   `.void`; expense payments use `expenses.view`, `.manage`, `.post`, and
-  `.void`. System Administrators and Factory Managers retain all seeded
-  permissions. Accounts & Finance has the payment permissions, while
+  `.void`. System Administrators receive all catalogue permissions; Factory
+  Managers receive explicit operational grants, not all catalogue permissions.
+  Accounts & Finance has the payment permissions, while
   Read-only Auditors have view-only access. Other roles receive no payment
   permission unless explicitly assigned. Combined payment-register exports
   require view access to both customer receipts and supplier payments.
