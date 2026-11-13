@@ -316,11 +316,17 @@ class MainWindow(QMainWindow):
     def styles():
         return '''
         /* Global typography and background */
+        QWidget {
+            color: #0f172a;
+        }
         QMainWindow, #centralWidget {
             background-color: #f8fafc;
             color: #0f172a;
             font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
             font-size: 13px;
+        }
+        QLabel, QCheckBox, QRadioButton, QGroupBox, QTabBar, QHeaderView, QAbstractButton, QAbstractSpinBox, QComboBox, QDateEdit {
+            color: #0f172a;
         }
 
         /* Sidebar container */
@@ -427,6 +433,11 @@ class MainWindow(QMainWindow):
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
+        #metricBigValue {
+            font-size: 22px;
+            font-weight: 700;
+            color: #0f172a;
+        }
         #tableCountLabel {
             font-size: 13px;
             font-weight: 600;
@@ -452,6 +463,12 @@ class MainWindow(QMainWindow):
             font-weight: 500;
             padding: 6px 14px;
             outline: none;
+            color: #0f172a;
+        }
+        QPushButton:disabled {
+            background-color: #e2e8f0;
+            color: #64748b;
+            border: 1px solid #cbd5e1;
         }
         #primaryButton {
             background-color: #2563eb;
@@ -465,6 +482,11 @@ class MainWindow(QMainWindow):
         }
         #primaryButton:pressed {
             background-color: #1e40af;
+        }
+        #primaryButton:disabled {
+            background-color: #bfdbfe;
+            color: #1e3a8a;
+            border: 1px solid #93c5fd;
         }
         #secondaryButton {
             background-color: #ffffff;
@@ -556,17 +578,25 @@ class MainWindow(QMainWindow):
             color: #1e40af;
             font-weight: 600;
         }
+        QHeaderView {
+            qproperty-defaultAlignment: AlignCenter;
+            min-height: 32px;
+        }
         QHeaderView::section {
             background-color: #f1f5f9;
             color: #475569;
             font-size: 12px;
             font-weight: 700;
+            min-height: 32px;
             padding: 9px 10px;
             border: none;
             border-bottom: 2px solid #cbd5e1;
             border-right: 1px solid #e2e8f0;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+        }
+        QHeaderView::section:checked {
+            background-color: #e2e8f0;
         }
 
         /* Dialogs and Details */
@@ -695,6 +725,8 @@ class MainWindow(QMainWindow):
             color: #475569;
             font-weight: 600;
             padding: 8px 18px;
+            border: 1px solid #e2e8f0;
+            border-bottom: none;
             border-top-left-radius: 6px;
             border-top-right-radius: 6px;
             margin-right: 4px;
@@ -704,5 +736,8 @@ class MainWindow(QMainWindow):
             color: #2563eb;
             border: 1px solid #e2e8f0;
             border-bottom: 1px solid #ffffff;
+        }
+        QTabBar::tab:disabled {
+            color: #94a3b8;
         }
         '''

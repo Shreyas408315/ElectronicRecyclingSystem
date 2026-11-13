@@ -15,8 +15,10 @@ from services.security_service import (
     PERMISSIONS,
     ROLE_MATRIX,
     _seed_security_catalogue,
+    _trusted_sessions,
 )
 from sqlalchemy import select
+from datetime import datetime, timedelta
 
 
 PASSWORD = "Strong-password-2026!"
@@ -210,3 +212,143 @@ def test_roles_authorize_admin_and_deny_unprivileged_user():
         with pytest.raises(AuthorizationError):
             require_permission(fake, "users.manage", db_session=session)
         assert session.query(UserAuditEvent).filter_by(action="authorization_denied").count() == 1
+
+
+def test_create_user_rejects_missing_fabricated_and_expired_actors():
+    setup_admin()
+    with get_db() as session:
+        with pytest.raises(AuthorizationError):
+            create_user(
+                session,
+                actor_context=None,
+                username="missing-actor",
+                password=PASSWORD,
+                full_name="Missing Actor",
+                role_names=["Factory Manager"],
+            )
+
+        admin_context = authenticate(session, "admin", PASSWORD)
+        fabricated = ActorContext(
+            user_id=admin_context.user_id,
+            username=admin_context.username,
+            session_id="not-a-trusted-session",
+            issued_at=admin_context.issued_at,
+            database_identity=admin_context.database_identity,
+        )
+        with pytest.raises(AuthorizationError):
+            create_user(
+                session,
+                actor_context=fabricated,
+                username="fabricated-actor",
+                password=PASSWORD,
+                full_name="Fabricated Actor",
+                role_names=["Factory Manager"],
+            )
+
+    trusted = _trusted_sessions[admin_context.session_id]
+    trusted.last_activity = datetime.now() - timedelta(
+        minutes=admin_context.timeout_minutes + 1
+    )
+    with get_db() as session:
+        with pytest.raises(AuthorizationError):
+            create_user(
+                session,
+                actor_context=admin_context,
+                username="expired-actor",
+                password=PASSWORD,
+                full_name="Expired Actor",
+                role_names=["Factory Manager"],
+            )
+
+
+def test_create_user_rejects_inactive_and_unprivileged_actors():
+    admin_id = setup_admin()
+    with get_db() as session:
+        admin_context = authenticate(session, "admin", PASSWORD)
+        operator = create_user(
+            session,
+            actor_context=admin_context,
+            username="user-creation-operator",
+            password=PASSWORD,
+            full_name="User Creation Operator",
+            role_names=["Procurement"],
+        )
+        operator_context = authenticate(
+            session, operator.username, PASSWORD
+        )
+        with pytest.raises(AuthorizationError):
+            create_user(
+                session,
+                actor_context=operator_context,
+                username="unauthorized-create",
+                password=PASSWORD,
+                full_name="Unauthorized Create",
+                role_names=["Factory Manager"],
+            )
+
+    with get_db() as session:
+        session.get(User, admin_id).is_active = False
+    with get_db() as session:
+        with pytest.raises(AuthorizationError):
+            create_user(
+                session,
+                actor_context=admin_context,
+                username="inactive-admin-create",
+                password=PASSWORD,
+                full_name="Inactive Admin Create",
+                role_names=["Factory Manager"],
+            )
+
+
+def test_create_user_duplicate_password_and_role_failures_roll_back():
+    setup_admin()
+    with get_db() as session:
+        admin_context = authenticate(session, "admin", PASSWORD)
+        create_user(
+            session,
+            actor_context=admin_context,
+            username="duplicate-user",
+            password=PASSWORD,
+            full_name="Duplicate User",
+            role_names=["Factory Manager"],
+        )
+        with pytest.raises(AuthenticationError, match="already exists"):
+            create_user(
+                session,
+                actor_context=admin_context,
+                username="duplicate-user",
+                password=PASSWORD,
+                full_name="Duplicate User",
+                role_names=["Factory Manager"],
+            )
+        with pytest.raises(AuthenticationError, match="at least 12"):
+            create_user(
+                session,
+                actor_context=admin_context,
+                username="short-password",
+                password="short",
+                full_name="Short Password",
+                role_names=["Factory Manager"],
+            )
+
+    with pytest.raises(AuthenticationError, match="roles do not exist"):
+        with get_db() as session:
+            create_user(
+                session,
+                actor_context=admin_context,
+                username="role-rollback-user",
+                password=PASSWORD,
+                full_name="Role Rollback User",
+                role_names=["Factory Manager", "Missing Built-in Role"],
+            )
+
+    with get_db() as session:
+        assert session.scalar(
+            select(User).where(User.username == "role-rollback-user")
+        ) is None
+        assert session.scalar(
+            select(UserAuditEvent).where(
+                UserAuditEvent.action == "user_created",
+                UserAuditEvent.after_values.contains("role-rollback-user"),
+            )
+        ) is None

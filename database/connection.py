@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime
 import hashlib
+import os
 from pathlib import Path
 import sqlite3
 from sqlalchemy import create_engine, event
@@ -10,7 +11,23 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
-DB_PATH = DATA_DIR / "factory.db"
+DEFAULT_DB_PATH = DATA_DIR / "factory.db"
+
+
+def resolve_database_path() -> Path:
+    """Resolve the runtime database path while keeping production as the default."""
+    override = os.environ.get("ERS_ACCEPTANCE_DB_PATH")
+    if not override:
+        return DEFAULT_DB_PATH
+
+    candidate = Path(override).expanduser().resolve()
+    if candidate == DEFAULT_DB_PATH.resolve():
+        raise RuntimeError("Acceptance database path must differ from the production database path.")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+DB_PATH = resolve_database_path()
 
 engine = create_engine(
     f"sqlite:///{DB_PATH.as_posix()}",
