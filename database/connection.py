@@ -149,7 +149,13 @@ def initialize_database():
     from database import models  # register model metadata
     migration_backup = None
     if _production_schema_changes_required(engine):
-        migration_backup = create_verified_sqlite_backup(DB_PATH, ROOT / "reports" / "backups")
+        backup_directory = Path(
+            os.environ.get(
+                "ERS_ACCEPTANCE_BACKUPS_PATH",
+                str(ROOT / "reports" / "backups"),
+            )
+        ).expanduser().resolve()
+        migration_backup = create_verified_sqlite_backup(DB_PATH, backup_directory)
 
     Base.metadata.create_all(bind=engine)
     

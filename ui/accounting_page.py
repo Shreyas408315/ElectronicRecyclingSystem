@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from decimal import Decimal
 
@@ -11,7 +12,10 @@ from PySide6.QtWidgets import (
 from sqlalchemy import select
 
 from database.connection import get_db
-from database.models import Account, ApplicationSetting, Customer, ExpenseCategory, Supplier
+from database.models import (
+    Account, ApplicationSetting, Customer, ExpenseCategory, Permission,
+    RolePermission, Supplier, UserRole,
+)
 from services.account_service import (
     close_accounting_period, configure_account_mapping, create_account,
     deactivate_account, update_account,
@@ -37,6 +41,8 @@ from services.security_service import (
     AuthorizationError, current_actor_context, require_permission,
 )
 
+logger = logging.getLogger(__name__)
+
 
 _REPORT_TYPES = (
     "Trial Balance", "Profit & Loss", "Balance Sheet", "Journal Register",
@@ -56,13 +62,13 @@ def _actor_context():
     return actor_context
 
 
-def _has_permission(permission_code: str) -> bool:
-    try:
-        with get_db() as db:
-            require_permission(_actor_context(), permission_code, db_session=db)
-        return True
-    except AuthorizationError:
-        return False
+def _permission_codes(db, user_id: int) -> set[str]:
+    return set(db.scalars(
+        select(Permission.code)
+        .join(RolePermission, RolePermission.permission_id == Permission.id)
+        .join(UserRole, UserRole.role_id == RolePermission.role_id)
+        .where(UserRole.user_id == user_id)
+    ))
 
 
 class ManualJournalDialog(QDialog):
@@ -144,9 +150,12 @@ class AccountingPage(QWidget):
         title.setObjectName("heading")
         header.addWidget(title)
         header.addStretch()
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.load_data)
-        header.addWidget(refresh)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(self.refresh_data)
+        header.addWidget(self.refresh_button)
+        self.refresh_status = QLabel()
+        self.refresh_status.setObjectName("muted")
+        header.addWidget(self.refresh_status)
         root.addLayout(header)
 
         self.summary = QLabel()
@@ -191,6 +200,12 @@ class AccountingPage(QWidget):
         actions.addWidget(edit)
         actions.addWidget(deactivate)
         self.account_manage_buttons = (seed, add, edit, deactivate)
+        (
+            self.account_seed_button,
+            self.account_add_button,
+            self.account_edit_button,
+            self.account_deactivate_button,
+        ) = self.account_manage_buttons
         actions.addStretch()
         self.mapping_key = QComboBox()
         self.mapping_key.setEditable(True)
@@ -222,12 +237,36 @@ class AccountingPage(QWidget):
         actions.addWidget(self.mapping_account)
         actions.addWidget(save_mapping)
         layout.addLayout(actions)
+        self.account_empty_state = QLabel(
+            "The chart of accounts has not been initialized. An authorized user "
+            "with accounting.configure must initialize the default chart, then "
+            "configure required source-account mappings. Refresh does not change setup."
+        )
+        self.account_empty_state.setObjectName("muted")
+        self.account_empty_state.setWordWrap(True)
+        self.account_empty_state.hide()
+        layout.addWidget(self.account_empty_state)
         self.account_table = self._table(
             ["Code", "Account", "Type", "Subtype", "Parent", "Status", "System key"]
         )
+        self.account_table.itemSelectionChanged.connect(
+            self._update_configuration_controls
+        )
         layout.addWidget(self.account_table)
+        self.mapping_empty_state = QLabel(
+            "No account mappings are configured. An authorized user with "
+            "accounting.configure must map each required accounting source to an "
+            "appropriate account. Existing review items are not retried automatically."
+        )
+        self.mapping_empty_state.setObjectName("muted")
+        self.mapping_empty_state.setWordWrap(True)
+        self.mapping_empty_state.hide()
+        layout.addWidget(self.mapping_empty_state)
         self.mapping_table = self._table(["Mapping key", "Account", "Description", "Status"])
         layout.addWidget(self.mapping_table)
+        self.mapping_account.currentIndexChanged.connect(
+            self._update_configuration_controls
+        )
         self.tabs.addTab(page, "Accounts & Mappings")
 
     def _build_journals_tab(self):
@@ -267,6 +306,20 @@ class AccountingPage(QWidget):
         layout.addLayout(actions)
         self.exception_table = self._table(
             ["Source", "ID", "Event", "Reference", "Reason", "Status"]
+        )
+        exception_header = self.exception_table.horizontalHeader()
+        for column in (0, 1, 2, 3, 5):
+            exception_header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        exception_header.setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Interactive
+        )
+        exception_header.setMinimumSectionSize(80)
+        exception_header.resizeSection(4, 420)
+        self.exception_table.setWordWrap(True)
+        self.exception_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
         )
         layout.addWidget(self.exception_table)
         self.tabs.addTab(page, "Accounting Review Queue")
@@ -348,6 +401,7 @@ class AccountingPage(QWidget):
 
     def _clear_protected_data(self, message: str) -> None:
         self.summary.setText(message)
+        self._accounting_permissions = set()
         for table in (
             self.account_table, self.mapping_table, self.journal_table,
             self.exception_table, self.period_table, self.report_table,
@@ -358,53 +412,80 @@ class AccountingPage(QWidget):
         self.fiscal_month.setValue(4)
         self.fiscal_day.setValue(1)
         self.report_note.setText(message)
+        self.account_empty_state.hide()
+        self.mapping_empty_state.hide()
+        self.mapping_key.setEnabled(False)
+        self.mapping_account.setEnabled(False)
         for button in (
-            *self.account_manage_buttons,
             *self.journal_manage_buttons,
             *self.period_manage_buttons,
-            self.mapping_save_button,
             self.journal_post_button,
             self.journal_reverse_button,
             self.retry_exception_button,
             self.fiscal_configure_button,
         ):
             button.setEnabled(False)
+        self._update_configuration_controls()
 
-    def load_data(self):
+    def _update_configuration_controls(self, *_args):
+        can_configure = (
+            "accounting.configure" in getattr(self, "_accounting_permissions", set())
+        )
+        has_selected_account = self.account_table.currentRow() >= 0
+        self.account_seed_button.setEnabled(can_configure)
+        self.account_add_button.setEnabled(can_configure)
+        self.account_edit_button.setEnabled(
+            can_configure and has_selected_account
+        )
+        self.account_deactivate_button.setEnabled(
+            can_configure and has_selected_account
+        )
+        self.mapping_key.setEnabled(can_configure)
+        self.mapping_account.setEnabled(can_configure)
+        self.mapping_save_button.setEnabled(
+            can_configure and self.mapping_account.currentData() is not None
+        )
+
+    def refresh_data(self, *_args):
+        selected_tab = self.tabs.currentIndex()
+        self.refresh_status.setText("Refreshing accounting data…")
+        try:
+            if not self.load_data():
+                message = self.summary.text() or "Accounting data could not be refreshed."
+                self.refresh_status.setText("Refresh failed.")
+                QMessageBox.warning(self, "Accounting refresh failed", message)
+                return
+            self.refresh_status.setText("Accounting data refreshed.")
+        except Exception as exc:
+            logger.exception("Could not refresh accounting data")
+            self.refresh_status.setText("Refresh failed.")
+            QMessageBox.warning(
+                self,
+                "Accounting refresh failed",
+                f"Accounting data could not be refreshed: {exc}",
+            )
+        finally:
+            if 0 <= selected_tab < self.tabs.count():
+                self.tabs.setCurrentIndex(selected_tab)
+
+    def load_data(self, *_args) -> bool:
         actor_context = current_actor_context()
         if actor_context is None:
             self._clear_protected_data("Sign in to view accounting data.")
-            return
-        for button in self.account_manage_buttons:
-            button.setEnabled(_has_permission("accounting.configure"))
-        self.mapping_save_button.setEnabled(
-            _has_permission("accounting.configure")
-        )
-        for button in self.journal_manage_buttons:
-            button.setEnabled(_has_permission("accounting.manage"))
-        self.journal_post_button.setEnabled(_has_permission("accounting.post"))
-        self.journal_reverse_button.setEnabled(
-            _has_permission("accounting.reverse")
-        )
-        self.retry_exception_button.setEnabled(
-            _has_permission("accounting.exceptions.manage")
-        )
-        self.fiscal_configure_button.setEnabled(
-            _has_permission("accounting.configure")
-        )
-        for button in self.period_manage_buttons:
-            button.setEnabled(_has_permission("accounting.periods.manage"))
-        if not _has_permission("accounting.view"):
-            self._clear_protected_data(
-                "Accounting access is not available for this account."
-            )
-            return
+            return False
         try:
             with get_db() as db:
+                require_permission(
+                    actor_context, "accounting.view", db_session=db
+                )
+                permissions = _permission_codes(db, actor_context.user_id)
+                self._accounting_permissions = permissions
                 accounts = list_accounts(
                     db, active_only=False, actor_context=actor_context
                 )
-                mappings = list_account_mappings(db, actor_context=actor_context)
+                mappings = list_account_mappings(
+                    db, actor_context=actor_context
+                )
                 journals = list_journals(
                     db, limit=500, actor_context=actor_context
                 )
@@ -412,21 +493,52 @@ class AccountingPage(QWidget):
                     list_accounting_exceptions(
                         db, status="ALL", actor_context=actor_context
                     )
-                    if _has_permission("accounting.exceptions.manage") else []
+                    if "accounting.exceptions.manage" in permissions else []
                 )
-                periods = list_accounting_periods(db, actor_context=actor_context)
+                periods = list_accounting_periods(
+                    db, actor_context=actor_context
+                )
                 coverage = get_accounting_coverage(
                     db, actor_context=actor_context
                 )
-                trial = get_trial_balance(db, actor_context=actor_context)
-                customers = list(db.scalars(select(Customer).order_by(Customer.customer_name)))
-                suppliers = list(db.scalars(select(Supplier).order_by(Supplier.business_name)))
-                expense_categories = list(db.scalars(select(ExpenseCategory).order_by(ExpenseCategory.name)))
-                fiscal_month = db.get(ApplicationSetting, "accounting_fiscal_start_month")
-                fiscal_day = db.get(ApplicationSetting, "accounting_fiscal_start_day")
+                trial = get_trial_balance(
+                    db, actor_context=actor_context
+                )
+                customers = list(
+                    db.scalars(select(Customer).order_by(Customer.customer_name))
+                )
+                suppliers = list(
+                    db.scalars(select(Supplier).order_by(Supplier.business_name))
+                )
+                expense_categories = list(
+                    db.scalars(select(ExpenseCategory).order_by(ExpenseCategory.name))
+                )
+                fiscal_month = db.get(
+                    ApplicationSetting, "accounting_fiscal_start_month"
+                )
+                fiscal_day = db.get(
+                    ApplicationSetting, "accounting_fiscal_start_day"
+                )
         except AuthorizationError as exc:
             self._clear_protected_data(str(exc))
-            return
+            return False
+
+        for button in self.journal_manage_buttons:
+            button.setEnabled("accounting.manage" in permissions)
+        self.journal_post_button.setEnabled("accounting.post" in permissions)
+        self.journal_reverse_button.setEnabled(
+            "accounting.reverse" in permissions
+        )
+        self.retry_exception_button.setEnabled(
+            "accounting.exceptions.manage" in permissions
+        )
+        self.fiscal_configure_button.setEnabled(
+            "accounting.configure" in permissions
+        )
+        for button in self.period_manage_buttons:
+            button.setEnabled(
+                "accounting.periods.manage" in permissions
+            )
         self.summary.setText(
             f"Trial balance: debits {trial['total_debit']:.2f} / credits "
             f"{trial['total_credit']:.2f} (difference {trial['difference']:.2f})  |  "
@@ -473,6 +585,7 @@ class AccountingPage(QWidget):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.UserRole, account.id)
                 self.account_table.setItem(row, column, cell)
+        self.account_empty_state.setVisible(not accounts)
         self.mapping_table.setRowCount(len(mappings))
         for row, mapping in enumerate(mappings):
             values = (
@@ -482,6 +595,7 @@ class AccountingPage(QWidget):
             )
             for column, value in enumerate(values):
                 self.mapping_table.setItem(row, column, QTableWidgetItem(str(value)))
+        self.mapping_empty_state.setVisible(not mappings)
         self.journal_table.setRowCount(len(journals))
         for row, journal in enumerate(journals):
             values = (
@@ -503,7 +617,11 @@ class AccountingPage(QWidget):
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.UserRole, exception.id)
+                if column == 4:
+                    cell.setToolTip(exception.reason)
+                    cell.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
                 self.exception_table.setItem(row, column, cell)
+        self.exception_table.resizeRowsToContents()
         self.period_table.setRowCount(len(periods))
         for row, period in enumerate(periods):
             values = (
@@ -515,10 +633,8 @@ class AccountingPage(QWidget):
                 cell = QTableWidgetItem(str(value))
                 cell.setData(Qt.UserRole, period.id)
                 self.period_table.setItem(row, column, cell)
-        try:
-            self._preview_report()
-        except AuthorizationError as exc:
-            self._clear_protected_data(str(exc))
+        self._update_configuration_controls()
+        return self._preview_report()
 
     def _selected_id(self, table: QTableWidget) -> int | None:
         row = table.currentRow()
@@ -773,7 +889,7 @@ class AccountingPage(QWidget):
             "party_id": party[1] if party else None,
         }
 
-    def _preview_report(self):
+    def _preview_report(self) -> bool:
         start, end = self._date_range()
         report_type = self.report_type.currentText()
         try:
@@ -887,10 +1003,13 @@ class AccountingPage(QWidget):
                 f"{coverage['open_exceptions']} open exceptions. "
                 "Only posted journals are included; historical transactions are not auto-posted."
             )
+            return True
         except Exception as exc:
             self.report_table.setRowCount(0)
             self.report_note.clear()
+            logger.exception("Could not preview accounting report")
             QMessageBox.warning(self, "Could not preview report", str(exc))
+            return False
 
     def _export_report(self, format_name: str):
         extension = "pdf" if format_name == "pdf" else "xlsx"

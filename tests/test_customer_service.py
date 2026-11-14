@@ -281,6 +281,7 @@ def test_verified_backup_preserves_pre_migration_database_contents(tmp_path):
 
 def test_schema_initialization_backs_up_before_additive_migration(tmp_path, monkeypatch):
     database_path = tmp_path / "factory.db"
+    backup_directory = tmp_path / "isolated-backups"
     legacy = sqlite3.connect(database_path)
     legacy.execute(
         "CREATE TABLE application_settings (key VARCHAR(100) PRIMARY KEY, value VARCHAR(500) NOT NULL)"
@@ -294,11 +295,13 @@ def test_schema_initialization_backs_up_before_additive_migration(tmp_path, monk
     monkeypatch.setattr(database_connection, "DB_PATH", database_path)
     monkeypatch.setattr(database_connection, "ROOT", tmp_path)
     monkeypatch.setattr(database_connection, "engine", engine)
+    monkeypatch.setenv("ERS_ACCEPTANCE_BACKUPS_PATH", str(backup_directory))
 
     try:
         database_connection.initialize_database()
-        backup_paths = list((tmp_path / "reports" / "backups").glob("*pre-migration*.db"))
+        backup_paths = list(backup_directory.glob("*pre-migration*.db"))
         assert len(backup_paths) == 1
+        assert not list((tmp_path / "reports" / "backups").glob("*pre-migration*.db"))
         backup = sqlite3.connect(backup_paths[0].as_uri() + "?mode=ro", uri=True)
         migrated = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)
         try:
