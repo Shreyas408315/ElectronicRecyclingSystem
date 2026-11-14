@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -69,10 +70,12 @@ from services.security_service import (
     AuthorizationError,
     actor_has_permission,
     current_actor_context,
+    require_permission,
 )
 
 
 _NO_DATE = QDate(2000, 1, 1)
+logger = logging.getLogger(__name__)
 
 
 def _optional_date(control: QDateEdit) -> date | None:
@@ -273,13 +276,6 @@ class EmployeeFormDialog(QDialog):
             }
         self.employee_code.setText(values["employee_code"])
         self.full_name.setText(values["full_name"])
-        self.phone.setText(values["phone"])
-        self.alternate_phone.setText(values["alternate_phone"])
-        self.email.setText(values["email"])
-        self.address.setText(values["residential_address"])
-        self.city.setText(values["city"])
-        self.state.setText(values["state"])
-        self.pin_code.setText(values["pin_code"])
         _set_combo_data(self.department, values["department_id"])
         _set_combo_data(self.designation, values["designation_id"])
         self.employment_type.setCurrentText(values["employment_type"])
@@ -293,11 +289,21 @@ class EmployeeFormDialog(QDialog):
             self.leaving_check.setChecked(True)
             leaving = values["date_of_leaving"]
             self.leaving.setDate(QDate(leaving.year, leaving.month, leaving.day))
-        self.emergency_name.setText(values["emergency_contact_name"])
-        self.emergency_phone.setText(values["emergency_contact_phone"])
-        self.notes.setText(values["notes"])
-        self.responsible_user.setText(values["responsible_user"])
-        self.photo_label.setText(values["profile_photo_path"] or "No profile photograph stored.")
+        if self.can_view_private:
+            self.phone.setText(values["phone"])
+            self.alternate_phone.setText(values["alternate_phone"])
+            self.email.setText(values["email"])
+            self.address.setText(values["residential_address"])
+            self.city.setText(values["city"])
+            self.state.setText(values["state"])
+            self.pin_code.setText(values["pin_code"])
+            self.emergency_name.setText(values["emergency_contact_name"])
+            self.emergency_phone.setText(values["emergency_contact_phone"])
+            self.notes.setText(values["notes"])
+            self.responsible_user.setText(values["responsible_user"])
+            self.photo_label.setText(
+                values["profile_photo_path"] or "No profile photograph stored."
+            )
 
     def _choose_photo(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -1313,18 +1319,40 @@ class EmployeePage(QWidget):
                 can_manage=self.can_manage,
             ).exec()
 
-    def edit_selected(self):
+    def edit_selected(self, *_args):
         employee_id = self._selected_employee_id()
-        if employee_id is None or not self.can_manage or self.actor_context is None:
+        if employee_id is None:
             return
-        dialog = EmployeeFormDialog(
-            self,
-            employee_id=int(employee_id),
-            actor_context=self.actor_context,
-            can_view_private=self.can_view_private,
-        )
-        if dialog.exec() == QDialog.Accepted:
-            self.load_data()
+        try:
+            actor_context = current_actor_context()
+            if (
+                not self.can_manage
+                or actor_context is None
+                or actor_context != self.actor_context
+            ):
+                raise AuthorizationError(
+                    "A current session with employee-management permission is required."
+                )
+            with get_db() as session:
+                require_permission(
+                    actor_context, "employees.manage", db_session=session
+                )
+            dialog = EmployeeFormDialog(
+                self,
+                employee_id=int(employee_id),
+                actor_context=actor_context,
+                can_view_private=self.can_view_private,
+            )
+            if dialog.exec() == QDialog.Accepted:
+                self.load_data()
+        except AuthorizationError as exc:
+            logger.warning("Employee edit denied: %s", exc)
+            QMessageBox.warning(self, "Access denied", str(exc))
+        except Exception as exc:
+            logger.exception(
+                "Could not open edit dialog for employee id %s", employee_id
+            )
+            QMessageBox.critical(self, "Could not edit employee", str(exc))
 
     def toggle_selected(self):
         employee_id = self._selected_employee_id()
